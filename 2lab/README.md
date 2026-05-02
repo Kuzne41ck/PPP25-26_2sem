@@ -14,7 +14,7 @@
 
 ## Что реализовано
 
-- Визуализация последовательностей полигонов в SVG.
+- Визуализация последовательностей полигонов через `matplotlib` (`matplotlib.patches.Polygon`).
 - Бесконечные генераторы:
   - `gen_rectangle`
   - `gen_triangle`
@@ -44,18 +44,52 @@
   - `count_2d`
   - `zip_tuple`
 
-## Структура
+## Запуск из терминала
 
-- [functional_polygons.py](C:/Users/edren/Documents/Codex/2026-04-29/api-api-itertools-functools-0-0/functional_polygons.py) — основной API.
-- [demo.py](C:/Users/edren/Documents/Codex/2026-04-29/api-api-itertools-functools-0-0/demo.py) — запуск демонстрации.
-- `artifacts/*.svg` — визуализации, создаются после запуска.
+Сначала установите зависимость:
 
-## Запуск
+```bash
+python -m pip install matplotlib
+```
+
+Показать список сценариев:
+
+```bash
+python main.py list --verbose
+```
+
+Открыть окно с рисунком:
+
+```bash
+python main.py show parallel_bands
+```
+
+Открыть окно и одновременно сохранить PNG:
+
+```bash
+python main.py show crossed_bands --save artifacts/crossed_bands.png
+```
+
+Сохранить без открытия окна:
+
+```bash
+python main.py save symmetric_triangles artifacts/symmetric_triangles.png
+```
+
+Выгрузить все готовые сценарии:
+
+```bash
+python main.py export-all --dir artifacts
+```
+
+## Альтернативный запуск
 
 ```bash
 python demo.py
 ```
 
-## Примечание по визуализации
+Для запуска без открытия окон `matplotlib`:
 
-В среде выполнения `matplotlib` недоступен, поэтому визуализация сделана в SVG без внешних зависимостей. Это сохраняет требуемую функциональность: построение и экспорт последовательностей полигонов.
+```bash
+python demo.py --no-show
+```
