@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import argparse
 import math
 from dataclasses import dataclass
 from functools import partial, reduce, wraps
-from itertools import chain, count, islice, starmap
+from itertools import chain, count, cycle, islice, starmap
 from pathlib import Path
-from typing import Callable, Iterable, Iterator, Sequence
+from typing import TYPE_CHECKING, Callable, Iterable, Iterator, Sequence
+
+if TYPE_CHECKING:
+    from matplotlib.axes import Axes
+    from matplotlib.figure import Figure
 
 Point = tuple[float, float]
 Polygon = tuple[Point, ...]
@@ -414,57 +419,86 @@ def reject_intersecting(polygons: PolygonStream) -> Iterator[Polygon]:
             yield polygon
 
 
-def render_polygons_svg(
-    polygons: Sequence[Polygon],
-    target: str | Path,
-    *,
-    stroke: str = "#1f2937",
-    fill_palette: Sequence[str] | None = None,
-    width: int = 900,
-    height: int = 500,
-    padding: int = 32,
-) -> Path:
-    fill_palette = fill_palette or ("#93c5fd", "#86efac", "#fca5a5", "#fde68a", "#c4b5fd", "#f9a8d4")
+def _axes_bounds(polygons: Sequence[Polygon], padding_ratio: float = 0.08) -> tuple[float, float, float, float]:
     xs = tuple(x for polygon in polygons for x, _ in polygon)
     ys = tuple(y for polygon in polygons for _, y in polygon)
     min_x, max_x = min(xs), max(xs)
     min_y, max_y = min(ys), max(ys)
-    scale_x = (width - 2 * padding) / max(max_x - min_x, 1.0)
-    scale_y = (height - 2 * padding) / max(max_y - min_y, 1.0)
-    scale = min(scale_x, scale_y)
-
-    def project(point: Point) -> Point:
-        x, y = point
-        px = padding + (x - min_x) * scale
-        py = height - padding - (y - min_y) * scale
-        return (px, py)
-
-    target_path = Path(target)
-    polygons_markup = "\n".join(
-        f'<polygon points="{" ".join(f"{px:.2f},{py:.2f}" for px, py in map(project, polygon))}" '
-        f'fill="{fill_palette[index % len(fill_palette)]}" fill-opacity="0.45" '
-        f'stroke="{stroke}" stroke-width="2" />'
-        for index, polygon in enumerate(polygons)
+    span_x = max(max_x - min_x, 1.0)
+    span_y = max(max_y - min_y, 1.0)
+    return (
+        min_x - span_x * padding_ratio,
+        max_x + span_x * padding_ratio,
+        min_y - span_y * padding_ratio,
+        max_y + span_y * padding_ratio,
     )
-    target_path.write_text(
-        "\n".join(
-            (
-                f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">',
-                '<rect width="100%" height="100%" fill="#f8fafc" />',
-                polygons_markup,
-                "</svg>",
-            )
-        ),
-        encoding="utf-8",
-    )
-    return target_path
 
 
-def visualize_polygons(polygons: PolygonStream, target: str | Path, limit: int | None = None) -> Path:
+def _load_matplotlib():
+    try:
+        import matplotlib.pyplot as plt
+        from matplotlib.patches import Polygon as PolygonPatch
+    except ImportError as error:
+        raise RuntimeError(
+            "matplotlib is required for visualization. Install it with 'python -m pip install matplotlib'."
+        ) from error
+    return plt, PolygonPatch
+
+
+def visualize_polygons(
+    polygons: PolygonStream,
+    title: str = "Polygon sequence",
+    *,
+    limit: int | None = None,
+    show: bool = True,
+    save_path: str | Path | None = None,
+    ax: "Axes | None" = None,
+    face_colors: Sequence[str] | None = None,
+    edge_color: str = "#1f2937",
+) -> "Figure":
+    plt, PolygonPatch = _load_matplotlib()
     selected = tuple(polygons if limit is None else islice(polygons, limit))
     if not selected:
         raise ValueError("No polygons to visualize")
-    return render_polygons_svg(selected, target)
+
+    created_figure = ax is None
+    if ax is None:
+        figure, ax = plt.subplots(figsize=(10, 6))
+    else:
+        figure = ax.figure
+
+    colors = cycle(face_colors or ("#93c5fd", "#86efac", "#fca5a5", "#fde68a", "#c4b5fd", "#f9a8d4"))
+    for polygon, color in zip(selected, colors):
+        ax.add_patch(
+            PolygonPatch(
+                polygon,
+                closed=True,
+                facecolor=color,
+                edgecolor=edge_color,
+                linewidth=1.8,
+                alpha=0.5,
+            )
+        )
+
+    min_x, max_x, min_y, max_y = _axes_bounds(selected)
+    ax.set_xlim(min_x, max_x)
+    ax.set_ylim(min_y, max_y)
+    ax.set_aspect("equal", adjustable="box")
+    ax.grid(True, linestyle="--", linewidth=0.5, alpha=0.45)
+    ax.set_title(title)
+    ax.set_xlabel("X")
+    ax.set_ylabel("Y")
+
+    if save_path is not None:
+        Path(save_path).parent.mkdir(parents=True, exist_ok=True)
+        figure.savefig(save_path, dpi=150, bbox_inches="tight")
+
+    if show and created_figure:
+        plt.show()
+    elif created_figure:
+        plt.close(figure)
+
+    return figure
 
 
 def scenario_seven_each() -> dict[str, tuple[Polygon, ...]]:
@@ -537,30 +571,142 @@ def demo_outputs(base_path: str | Path) -> dict[str, Path]:
     root = Path(base_path)
     root.mkdir(parents=True, exist_ok=True)
     outputs = {
-        "figure_2": visualize_polygons(chain.from_iterable(scenario_seven_each().values()), root / "figure_2.svg"),
-        "parallel_bands": visualize_polygons(scenario_parallel_bands(), root / "parallel_bands.svg"),
-        "crossed_bands": visualize_polygons(scenario_crossed_bands(), root / "crossed_bands.svg"),
-        "symmetric_triangles": visualize_polygons(scenario_symmetric_triangles(), root / "symmetric_triangles.svg"),
-        "scaled_quadrilaterals": visualize_polygons(scenario_scaled_quadrilaterals(), root / "scaled_quadrilaterals.svg"),
-        "filter_six": visualize_polygons(scenario_filter_six(), root / "filter_six.svg"),
-        "short_side_selection": visualize_polygons(
-            scenario_short_side_selection(),
-            root / "short_side_selection.svg",
+        "figure_2": root / "figure_2.png",
+        "parallel_bands": root / "parallel_bands.png",
+        "crossed_bands": root / "crossed_bands.png",
+        "symmetric_triangles": root / "symmetric_triangles.png",
+        "scaled_quadrilaterals": root / "scaled_quadrilaterals.png",
+        "filter_six": root / "filter_six.png",
+        "short_side_selection": root / "short_side_selection.png",
+        "remove_intersections": root / "remove_intersections.png",
+        "translated_rectangles": root / "translated_rectangles.png",
+        "compact_scaled_quadrilaterals": root / "compact_scaled_quadrilaterals.png",
+    }
+    visualize_polygons(
+        chain.from_iterable(scenario_seven_each().values()),
+        "Seven rectangles, triangles and hexagons",
+        show=False,
+        save_path=outputs["figure_2"],
+    )
+    visualize_polygons(scenario_parallel_bands(), "Three parallel bands", show=False, save_path=outputs["parallel_bands"])
+    visualize_polygons(scenario_crossed_bands(), "Two crossed bands", show=False, save_path=outputs["crossed_bands"])
+    visualize_polygons(
+        scenario_symmetric_triangles(),
+        "Symmetric triangle bands",
+        show=False,
+        save_path=outputs["symmetric_triangles"],
+    )
+    visualize_polygons(
+        scenario_scaled_quadrilaterals(),
+        "Scaled quadrilaterals between two lines",
+        show=False,
+        save_path=outputs["scaled_quadrilaterals"],
+    )
+    visualize_polygons(scenario_filter_six(), "Six filtered polygons", show=False, save_path=outputs["filter_six"])
+    visualize_polygons(
+        scenario_short_side_selection(),
+        "Short side selection",
+        show=False,
+        save_path=outputs["short_side_selection"],
+    )
+    visualize_polygons(
+        scenario_remove_intersections(),
+        "Removing intersections",
+        show=False,
+        save_path=outputs["remove_intersections"],
+    )
+    visualize_polygons(
+        take(5, translated_rectangles()),
+        "Decorator: translated rectangles",
+        show=False,
+        save_path=outputs["translated_rectangles"],
+    )
+    visualize_polygons(
+        take(4, compact_scaled_quadrilaterals()),
+        "Decorator: filtered quadrilaterals",
+        show=False,
+        save_path=outputs["compact_scaled_quadrilaterals"],
+    )
+    return outputs
+
+
+def _scenario_map() -> dict[str, tuple[str, Callable[[], PolygonStream]]]:
+    return {
+        "figure_2": (
+            "Seven rectangles, triangles and hexagons",
+            lambda: chain.from_iterable(scenario_seven_each().values()),
         ),
-        "remove_intersections": visualize_polygons(
-            scenario_remove_intersections(),
-            root / "remove_intersections.svg",
-        ),
-        "translated_rectangles": visualize_polygons(
-            take(5, translated_rectangles()),
-            root / "translated_rectangles.svg",
-        ),
-        "compact_scaled_quadrilaterals": visualize_polygons(
-            take(4, compact_scaled_quadrilaterals()),
-            root / "compact_scaled_quadrilaterals.svg",
+        "parallel_bands": ("Three parallel bands", scenario_parallel_bands),
+        "crossed_bands": ("Two crossed bands", scenario_crossed_bands),
+        "symmetric_triangles": ("Symmetric triangle bands", scenario_symmetric_triangles),
+        "scaled_quadrilaterals": ("Scaled quadrilaterals between two lines", scenario_scaled_quadrilaterals),
+        "filter_six": ("Six filtered polygons", scenario_filter_six),
+        "short_side_selection": ("Short side selection", scenario_short_side_selection),
+        "remove_intersections": ("Removing intersections", scenario_remove_intersections),
+        "translated_rectangles": ("Decorator: translated rectangles", lambda: take(5, translated_rectangles())),
+        "compact_scaled_quadrilaterals": (
+            "Decorator: filtered quadrilaterals",
+            lambda: take(4, compact_scaled_quadrilaterals()),
         ),
     }
-    return outputs
+
+
+def _build_cli_parser() -> argparse.ArgumentParser:
+    scenario_names = tuple(_scenario_map())
+    parser = argparse.ArgumentParser(description="Functional polygon API terminal interface")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    list_parser = subparsers.add_parser("list", help="show available scenarios")
+    list_parser.add_argument("--verbose", action="store_true", help="show titles too")
+
+    show_parser = subparsers.add_parser("show", help="draw a scenario in a matplotlib window")
+    show_parser.add_argument("scenario", choices=scenario_names, help="scenario name to display")
+    show_parser.add_argument("--save", dest="save_path", help="also save the image to a PNG file")
+
+    save_parser = subparsers.add_parser("save", help="save a scenario to PNG without opening a window")
+    save_parser.add_argument("scenario", choices=scenario_names, help="scenario name to save")
+    save_parser.add_argument("path", help="target PNG file path")
+
+    export_parser = subparsers.add_parser("export-all", help="save all predefined scenarios to a directory")
+    export_parser.add_argument(
+        "--dir",
+        dest="output_dir",
+        default="artifacts",
+        help="directory for generated PNG files",
+    )
+    return parser
+
+
+def cli(argv: Sequence[str] | None = None) -> int:
+    parser = _build_cli_parser()
+    args = parser.parse_args(argv)
+    scenarios = _scenario_map()
+
+    if args.command == "list":
+        for name, (title, _) in scenarios.items():
+            print(f"{name} - {title}" if args.verbose else name)
+        return 0
+
+    if args.command == "export-all":
+        outputs = demo_outputs(args.output_dir)
+        for name, path in outputs.items():
+            print(f"{name}: {path}")
+        return 0
+
+    title, factory = scenarios[args.scenario]
+    if args.command == "show":
+        visualize_polygons(factory(), title, show=True, save_path=args.save_path)
+        if args.save_path:
+            print(Path(args.save_path).resolve())
+        return 0
+
+    if args.command == "save":
+        visualize_polygons(factory(), title, show=False, save_path=args.path)
+        print(Path(args.path).resolve())
+        return 0
+
+    parser.error(f"Unsupported command: {args.command}")
+    return 1
 
 
 __all__ = [
@@ -573,6 +719,7 @@ __all__ = [
     "agr_perimeter",
     "band",
     "compact_scaled_quadrilaterals",
+    "cli",
     "count_2d",
     "demo_outputs",
     "filter_polygons",
@@ -609,3 +756,7 @@ __all__ = [
     "zip_polygons",
     "zip_tuple",
 ]
+
+
+if __name__ == "__main__":
+    raise SystemExit(cli())
